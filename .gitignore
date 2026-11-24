@@ -1,0 +1,43 @@
+# 编译与二进制产物（严禁上传可执行文件与库）
+*.exe
+*.dll
+*.so
+*.dylib
+*.lib
+*.a
+*.o
+*.obj
+*.res
+*.pdb
+*.ilk
+*.exp
+*.idb
+*.out
+
+# 构建与输出目录
+build/
+dist/
+out/
+bin/
+Release/
+Debug/
+x64/
+x86/
+
+# 日志与本地配置
+*.log
+*.ini
+*.tmp
+*.bak
+
+# 逆向/分析数据库与编辑器配置
+*.i64
+*.idb
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+CMakeUserPresets.json
+.DS_Store
+Thumbs.db
