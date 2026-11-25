@@ -3,6 +3,7 @@
 #include "common.h"
 #include "renderer.h"
 #include "pin_window.h"
+#include "scroll_capture.h"
 
 namespace snap {
 
@@ -10,7 +11,8 @@ class CaptureOverlay {
 public:
     static constexpr const wchar_t* kClassName = L"SnapTool_CaptureOverlay";
 
-    CaptureOverlay(HINSTANCE hInst) : m_hInst(hInst) {
+    CaptureOverlay(HINSTANCE hInst, ScrollCaptureSession* scrollSession = nullptr)
+        : m_hInst(hInst), m_scrollSession(scrollSession) {
         RegisterClassIfNeeded(hInst);
         m_editDarkBg = CreateSolidBrush(RGB(28, 33, 44));
         m_editLightBg = CreateSolidBrush(RGB(245, 247, 250));
@@ -220,6 +222,7 @@ private:
             { ToolbarAction::ToolText,      L"文字",                 true  },
             { ToolbarAction::Undo,          L"撤销 (Ctrl+Z)",        false },
             { ToolbarAction::Redo,          L"重做 (Ctrl+Y)",        true  },
+            { ToolbarAction::ScrollCapture, L"长截图 (L)",           false },
             { ToolbarAction::Pin,           L"贴到桌面 (T)",         false },
             { ToolbarAction::Save,          L"保存图片 (Ctrl+S)",    false },
             { ToolbarAction::Cancel,        L"取消 (Esc)",           false },
@@ -470,6 +473,22 @@ private:
         }
     }
 
+    void ActionStartScrollCapture() {
+        CommitTextEdit();
+        if (m_phase != Phase::Editing || RectWidth(m_selRect) < 32 || RectHeight(m_selRect) < 32) return;
+        RECT screenRect = {
+            m_screen.vx + m_selRect.left,
+            m_screen.vy + m_selRect.top,
+            m_screen.vx + m_selRect.right,
+            m_screen.vy + m_selRect.bottom
+        };
+        float scale = m_scale;
+        Close();
+        if (m_scrollSession) {
+            m_scrollSession->Start(screenRect, scale);
+        }
+    }
+
     void ActionUndo() {
         CommitTextEdit();
         if (m_annotations.empty()) return;
@@ -509,6 +528,7 @@ private:
             case ToolbarAction::ToolText:      toggleTool(ToolType::Text); break;
             case ToolbarAction::Undo:          ActionUndo(); break;
             case ToolbarAction::Redo:          ActionRedo(); break;
+            case ToolbarAction::ScrollCapture: ActionStartScrollCapture(); break;
             case ToolbarAction::Pin:           ActionPinAndFinish(); break;
             case ToolbarAction::Save:          ActionSaveAndFinish(); break;
             case ToolbarAction::Cancel:        Close(); break;
@@ -1224,6 +1244,10 @@ private:
                     ActionPinAndFinish();
                     return 0;
                 }
+                if (wParam == 'L' && !ctrl && m_phase == Phase::Editing && !m_textEdit) {
+                    ActionStartScrollCapture();
+                    return 0;
+                }
                 // 方向键微调选区位置
                 if (m_phase == Phase::Editing && !m_textEdit &&
                     (wParam == VK_LEFT || wParam == VK_RIGHT || wParam == VK_UP || wParam == VK_DOWN)) {
@@ -1272,6 +1296,7 @@ private:
     }
 
     HINSTANCE m_hInst = nullptr;
+    ScrollCaptureSession* m_scrollSession = nullptr;
     HWND m_hwnd = nullptr;
     ScreenCaptureData m_screen;
     HDC m_backDC = nullptr;

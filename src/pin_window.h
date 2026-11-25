@@ -29,14 +29,36 @@ public:
         RegisterClassIfNeeded(hInst);
 
         auto* self = new PinWindow(std::move(bmp));
-        int w = static_cast<int>(self->m_origW) + kBorder * 2;
-        int h = static_cast<int>(self->m_origH) + kBorder * 2;
+
+        // 若图片尺寸（如长截图）超过当前显示器工作区 85%，自动按比例缩小初始显示窗口
+        POINT pt = { screenX, screenY };
+        HMONITOR hMon = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
+        MONITORINFO mi = {};
+        mi.cbSize = sizeof(mi);
+        if (GetMonitorInfoW(hMon, &mi)) {
+            int maxW = static_cast<int>((mi.rcWork.right - mi.rcWork.left) * 0.85f);
+            int maxH = static_cast<int>((mi.rcWork.bottom - mi.rcWork.top) * 0.85f);
+            if (static_cast<int>(self->m_origW) > maxW || static_cast<int>(self->m_origH) > maxH) {
+                float sx = (self->m_origW > 0) ? static_cast<float>(maxW) / self->m_origW : 1.0f;
+                float sy = (self->m_origH > 0) ? static_cast<float>(maxH) / self->m_origH : 1.0f;
+                self->m_scale = (std::max)(0.15f, (std::min)(sx, sy));
+            }
+        }
+
+        int w = (std::max)(24, static_cast<int>(std::round(self->m_origW * self->m_scale))) + kBorder * 2;
+        int h = (std::max)(24, static_cast<int>(std::round(self->m_origH * self->m_scale))) + kBorder * 2;
+        int winX = screenX - kBorder;
+        int winY = screenY - kBorder;
+        if (mi.cbSize == sizeof(mi) && mi.rcWork.right > mi.rcWork.left) {
+            winX = (std::max)(static_cast<int>(mi.rcWork.left), (std::min)(winX, static_cast<int>(mi.rcWork.right) - w));
+            winY = (std::max)(static_cast<int>(mi.rcWork.top), (std::min)(winY, static_cast<int>(mi.rcWork.bottom) - h));
+        }
 
         HWND hwnd = CreateWindowExW(
             WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED,
             kClassName, L"SnapPin",
             WS_POPUP | WS_VISIBLE,
-            screenX - kBorder, screenY - kBorder, w, h,
+            winX, winY, w, h,
             nullptr, nullptr, hInst, self);
 
         if (!hwnd) {

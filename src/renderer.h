@@ -355,6 +355,7 @@ enum class ToolbarAction {
     ToolText,
     Undo,
     Redo,
+    ScrollCapture,
     Pin,
     Save,
     Cancel,
@@ -444,6 +445,14 @@ inline void DrawToolbarIcon(Gdiplus::Graphics& g, ToolbarAction act,
             g.DrawArc(&pen, cx - 6 * s, cy - 3 * s, 11 * s, 10 * s, 150, 180);
             g.DrawLine(&pen, cx + 5.5f * s, cy - 2 * s, cx + 1.5f * s, cy - 5.5f * s);
             g.DrawLine(&pen, cx + 5.5f * s, cy - 2 * s, cx + 1.5f * s, cy + 1.5f * s);
+            break;
+        }
+        case ToolbarAction::ScrollCapture: {
+            // 长截图图标：长条框 + 向下滚动箭头
+            g.DrawRectangle(&pen, cx - 5.5f * s, cy - 7 * s, 11 * s, 14 * s);
+            g.DrawLine(&pen, cx, cy - 3.5f * s, cx, cy + 3.8f * s);
+            g.DrawLine(&pen, cx, cy + 3.8f * s, cx - 3.0f * s, cy + 0.8f * s);
+            g.DrawLine(&pen, cx, cy + 3.8f * s, cx + 3.0f * s, cy + 0.8f * s);
             break;
         }
         case ToolbarAction::Pin: {

@@ -1,6 +1,7 @@
 #include "common.h"
 #include "renderer.h"
 #include "pin_window.h"
+#include "scroll_capture.h"
 #include "capture_overlay.h"
 
 #include <memory>
@@ -65,6 +66,7 @@ UINT g_wakeupMsg = 0;
 UINT g_taskbarCreatedMsg = 0;
 int g_hotkeyIdx = 0;
 std::wstring g_configPath;
+std::unique_ptr<snap::ScrollCaptureSession> g_scrollSession;
 std::unique_ptr<snap::CaptureOverlay> g_overlay;
 
 // ============================================================
@@ -301,12 +303,14 @@ LRESULT CALLBACK HostWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             return 0;
 
         case WM_DO_CAPTURE:
+            if (g_scrollSession && g_scrollSession->IsActive()) g_scrollSession->Close();
             if (g_overlay) g_overlay->Start();
             return 0;
 
         case WM_TIMER:
             if (wParam == TIMER_DELAY_CAPTURE) {
                 KillTimer(hwnd, TIMER_DELAY_CAPTURE);
+                if (g_scrollSession && g_scrollSession->IsActive()) g_scrollSession->Close();
                 if (g_overlay) g_overlay->Start();
             }
             return 0;
@@ -338,6 +342,7 @@ LRESULT CALLBACK HostWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
                     L"常用快捷键：\n"
                     L"  " + std::wstring(kHotkeyPresets[g_hotkeyIdx].label) + L" — 开始截图\n"
                     L"  Enter / 双击选区 — 完成并复制\n"
+                    L"  L — 长截图（自动/手动滚动拼接）\n"
                     L"  T — 贴图到桌面\n"
                     L"  Ctrl + S — 另存为图片\n"
                     L"  C（悬停态）— 复制当前像素色值\n"
@@ -360,6 +365,7 @@ LRESULT CALLBACK HostWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             KillTimer(hwnd, TIMER_DELAY_CAPTURE);
             UnregisterHotKey(hwnd, HOTKEY_ID);
             Shell_NotifyIconW(NIM_DELETE, &g_nid);
+            if (g_scrollSession) g_scrollSession->Close();
             if (g_overlay) g_overlay->Close();
             snap::PinWindow::CloseAll();
             PostQuitMessage(0);
@@ -423,6 +429,57 @@ int RunSelfTest(HINSTANCE hInst) {
     snap::PinWindow::CloseAll();
     if (snap::PinWindow::GetCount() != 0) return 15;
 
+    // 测试长图拼接引擎（含吸顶栏 30px + 吸底栏 24px + 多次向下滚动 + 无变化帧）
+    {
+        const int W = 320, H = 240, kTop = 30, kBot = 24;
+        const int kScrollH = H - kTop - kBot; // 186
+        const int kTotalDocH = 700;
+        std::vector<uint32_t> doc(static_cast<size_t>(W) * kTotalDocH);
+        for (int y = 0; y < kTotalDocH; ++y) {
+            for (int x = 0; x < W; ++x) {
+                uint32_t r = static_cast<uint32_t>((y * 7 + x * 3 + (y / 13) * 41) & 0xFF);
+                uint32_t g = static_cast<uint32_t>((y * 11 + x * 5 + (x / 17) * 29) & 0xFF);
+                uint32_t b = static_cast<uint32_t>((y * 17 + x * 2 + ((x ^ y) & 0x3F)) & 0xFF);
+                doc[static_cast<size_t>(y) * W + x] = 0xFF000000u | (r << 16) | (g << 8) | b;
+            }
+        }
+        auto makeFrame = [&](int scrollOffset) {
+            std::vector<uint32_t> f(static_cast<size_t>(W) * H);
+            for (int y = 0; y < H; ++y) {
+                for (int x = 0; x < W; ++x) {
+                    if (y < kTop) {
+                        uint32_t v = static_cast<uint32_t>((x * 5 + y * 9) & 0xFF);
+                        f[static_cast<size_t>(y) * W + x] = 0xFF200000u | (v << 8) | (255u - v);
+                    } else if (y >= H - kBot) {
+                        uint32_t v = static_cast<uint32_t>((x * 7 + y * 3) & 0xFF);
+                        f[static_cast<size_t>(y) * W + x] = 0xFF003000u | (v << 16) | (v & 0xFF);
+                    } else {
+                        int dy = scrollOffset + (y - kTop);
+                        f[static_cast<size_t>(y) * W + x] = doc[static_cast<size_t>(dy) * W + x];
+                    }
+                }
+            }
+            return f;
+        };
+
+        snap::ScrollStitcher stitcher;
+        auto f0 = makeFrame(0);
+        auto f1 = makeFrame(75);
+        auto f2 = makeFrame(150);
+        auto f3 = makeFrame(210);
+        int dy1 = 0, dy2 = 0, dy3 = 0;
+        if (stitcher.AppendFrame(f0.data(), W, H) != snap::StitchResult::FirstFrame) return 20;
+        if (stitcher.AppendFrame(f0.data(), W, H) != snap::StitchResult::NoChange) return 21;
+        if (stitcher.AppendFrame(f1.data(), W, H, &dy1) != snap::StitchResult::Stitched || dy1 != 75) return 22;
+        if (stitcher.AppendFrame(f2.data(), W, H, &dy2) != snap::StitchResult::Stitched || dy2 != 75) return 23;
+        if (stitcher.AppendFrame(f3.data(), W, H, &dy3) != snap::StitchResult::Stitched || dy3 != 60) return 24;
+        if (stitcher.Height() != H + 210) return 25;
+        auto stitchedBmp = stitcher.BuildBitmap();
+        if (!stitchedBmp || stitchedBmp->GetWidth() != static_cast<UINT>(W) ||
+            stitchedBmp->GetHeight() != static_cast<UINT>(H + 210)) return 26;
+        (void)kScrollH;
+    }
+
     return 0;
 }
 
@@ -484,7 +541,8 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR lpCmdLine, int) {
         return 2;
     }
 
-    g_overlay = std::make_unique<snap::CaptureOverlay>(hInst);
+    g_scrollSession = std::make_unique<snap::ScrollCaptureSession>(hInst);
+    g_overlay = std::make_unique<snap::CaptureOverlay>(hInst, g_scrollSession.get());
     g_trayIcon = CreateAppIcon();
     AddTrayIcon();
 
@@ -516,6 +574,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR lpCmdLine, int) {
     }
 
     g_overlay.reset();
+    g_scrollSession.reset();
     if (g_trayIcon) DestroyIcon(g_trayIcon);
     if (hMutex) CloseHandle(hMutex);
     Gdiplus::GdiplusShutdown(gdipToken);

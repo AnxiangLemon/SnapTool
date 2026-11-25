@@ -25,7 +25,7 @@
 
 namespace snap {
 
-static constexpr const wchar_t* kAppVersion = L"1.0.0";
+static constexpr const wchar_t* kAppVersion = L"1.1.0";
 static constexpr const wchar_t* kRepoUrl    = L"https://github.com/AnxiangLemon/SnapTool";
 
 // ============================================================
