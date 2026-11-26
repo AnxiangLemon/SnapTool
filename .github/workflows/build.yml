@@ -17,6 +17,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Build SnapTool.exe (MinGW-w64)
         shell: pwsh
@@ -30,9 +32,26 @@ jobs:
           path: SnapTool.exe
           if-no-files-found: error
 
+      - name: Extract Release Notes from Tag
+        id: notes
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $notes = ((git tag -l --format="%(contents)" "${{ github.ref_name }}") -join "`n").Trim()
+          if ($notes) {
+            $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+            [System.IO.File]::WriteAllText((Join-Path $PWD "release_notes.md"), $notes + "`n", $utf8NoBom)
+            "has_notes=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            "body_path=release_notes.md" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          } else {
+            "has_notes=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            "body_path=" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          }
+
       - name: Create GitHub Release (on tag push)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: SnapTool.exe
-          generate_release_notes: true
+          body_path: ${{ steps.notes.outputs.body_path }}
+          generate_release_notes: ${{ steps.notes.outputs.has_notes != 'true' }}
