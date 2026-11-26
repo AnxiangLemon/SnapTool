@@ -124,34 +124,48 @@ public:
             m_stickyBottom = useBot;
         }
 
-        // 4. 拼接新增像素行
-        int bodyEnd = m_height - m_stickyBottom;
-        if (bodyEnd < 0) bodyEnd = m_height;
-
-        int maxAdd = kMaxHeight - (bodyEnd + m_stickyBottom);
+        // 4. 在重叠区中部寻找像素差异最小的接缝行，避免将上一帧底部的淡出阴影/分隔线带入长图中间
+        int maxAdd = kMaxHeight - m_height;
         if (maxAdd <= 0) {
             return StitchResult::MaxHeightReached;
         }
-        int addRows = (std::min)(bestDy, maxAdd);
 
-        int newHeight = bodyEnd + addRows + m_stickyBottom;
-        m_pixels.resize(static_cast<size_t>(newHeight) * m_width);
-
-        // 拷贝新增的滚动内容行：frame[yBot - bestDy .. yBot - bestDy + addRows)
-        int srcStart = yBot - bestDy;
-        for (int r = 0; r < addRows; ++r) {
-            const uint32_t* srcRow = framePixels + static_cast<size_t>(srcStart + r) * m_width;
-            uint32_t* dstRow = m_pixels.data() + static_cast<size_t>(bodyEnd + r) * m_width;
-            memcpy(dstRow, srcRow, static_cast<size_t>(m_width) * sizeof(uint32_t));
+        int overlap = scrollH - bestDy;
+        int bestR = overlap / 2;
+        if (overlap >= 4) {
+            int rMin = overlap / 4;
+            int rMax = (overlap * 3) / 4;
+            double minRowErr = 1e9;
+            int midR = overlap / 2;
+            for (int r = rMin; r <= rMax; ++r) {
+                double e = ComputeRowDiff(
+                    m_prevFrame.data() + static_cast<size_t>(yTop + r + bestDy) * m_width,
+                    framePixels + static_cast<size_t>(yTop + r) * m_width,
+                    x0, x1);
+                if (e + 0.15 < minRowErr ||
+                    (std::fabs(e - minRowErr) <= 0.15 && std::abs(r - midR) < std::abs(bestR - midR))) {
+                    minRowErr = e;
+                    bestR = r;
+                }
+            }
         }
 
-        // 重新贴上底部固定栏
-        if (m_stickyBottom > 0) {
-            for (int r = 0; r < m_stickyBottom; ++r) {
-                const uint32_t* srcRow = framePixels + static_cast<size_t>(h - m_stickyBottom + r) * m_width;
-                uint32_t* dstRow = m_pixels.data() + static_cast<size_t>(bodyEnd + addRows + r) * m_width;
-                memcpy(dstRow, srcRow, static_cast<size_t>(m_width) * sizeof(uint32_t));
-            }
+        int currSeamY = yTop + bestR;
+        int prevSeamY = yTop + bestR + bestDy;
+        int canvasSeamY = (m_height - h) + prevSeamY;
+        if (canvasSeamY < 0) canvasSeamY = 0;
+        if (canvasSeamY > m_height) canvasSeamY = m_height;
+
+        int addRows = (std::min)(bestDy, maxAdd);
+        int newHeight = m_height + addRows;
+        m_pixels.resize(static_cast<size_t>(newHeight) * m_width);
+
+        // 从接缝行开始，用当前帧更清晰的内容覆盖旧帧底部区域并一直拷贝到帧底
+        int copyRows = (std::min)(h - currSeamY, newHeight - canvasSeamY);
+        for (int r = 0; r < copyRows; ++r) {
+            const uint32_t* srcRow = framePixels + static_cast<size_t>(currSeamY + r) * m_width;
+            uint32_t* dstRow = m_pixels.data() + static_cast<size_t>(canvasSeamY + r) * m_width;
+            memcpy(dstRow, srcRow, static_cast<size_t>(m_width) * sizeof(uint32_t));
         }
 
         m_height = newHeight;
@@ -254,8 +268,10 @@ private:
         uint64_t gradSum = 0, cnt = 0;
         for (int y = y0; y < y1; y += yStep) {
             const uint32_t* row = img + static_cast<size_t>(y) * w;
+            const uint32_t* prevRow = (y > y0) ? (img + static_cast<size_t>(y - 1) * w) : row;
             for (int x = x0 + xStep; x < x1; x += xStep) {
                 gradSum += static_cast<uint64_t>(PixelDiffRGB(row[x], row[x - xStep]));
+                gradSum += static_cast<uint64_t>(PixelDiffRGB(row[x], prevRow[x]));
                 ++cnt;
             }
         }
@@ -298,11 +314,14 @@ private:
         int coarseStep = (maxDy > 160) ? 2 : 1;
         for (int dy = 1; dy <= maxDy; dy += coarseStep) {
             int overlap = scrollH - dy;
-            int rowsToCheck = (std::min)(overlap, 56);
+            int margin = (overlap >= 48) ? (std::min)(12, overlap / 6) : 0;
+            int rStart = margin;
+            int rSpan = overlap - margin * 2;
+            int rowsToCheck = (std::min)(rSpan, 56);
             uint64_t errSum = 0;
             uint64_t cnt = 0;
             for (int k = 0; k < rowsToCheck; ++k) {
-                int r = (rowsToCheck == 1) ? 0 : (k * (overlap - 1)) / (rowsToCheck - 1);
+                int r = rStart + ((rowsToCheck == 1) ? 0 : (k * (rSpan - 1)) / (rowsToCheck - 1));
                 const uint8_t* cs = currSig.data() + static_cast<size_t>(r) * kSigCols;
                 const uint8_t* ps = prevSig.data() + static_cast<size_t>(r + dy) * kSigCols;
                 for (int i = 0; i < kSigCols; ++i) {
@@ -343,11 +362,14 @@ private:
 
         auto evalFine = [&](int dy) -> double {
             int overlap = scrollH - dy;
-            int rowsToCheck = (std::min)(overlap, 72);
+            int margin = (overlap >= 48) ? (std::min)(12, overlap / 6) : 0;
+            int rStart = margin;
+            int rSpan = overlap - margin * 2;
+            int rowsToCheck = (std::min)(rSpan, 72);
             uint64_t errSum = 0;
             uint64_t cnt = 0;
             for (int k = 0; k < rowsToCheck; ++k) {
-                int r = (rowsToCheck == 1) ? 0 : (k * (overlap - 1)) / (rowsToCheck - 1);
+                int r = rStart + ((rowsToCheck == 1) ? 0 : (k * (rSpan - 1)) / (rowsToCheck - 1));
                 const uint32_t* cr = curr + static_cast<size_t>(yTop + r) * w;
                 const uint32_t* pr = prev + static_cast<size_t>(yTop + r + dy) * w;
                 for (int x = x0; x < x1; x += xStep) {

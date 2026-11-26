@@ -478,6 +478,42 @@ int RunSelfTest(HINSTANCE hInst) {
         if (!stitchedBmp || stitchedBmp->GetWidth() != static_cast<UINT>(W) ||
             stitchedBmp->GetHeight() != static_cast<UINT>(H + 210)) return 26;
         (void)kScrollH;
+
+        // 回归测试：底部存在半透明暗色渐变 + 1px 分隔线时，中间拼接缝不能残留暗条/分隔线
+        auto makeFadeFrame = [&](int scrollOffset) {
+            std::vector<uint32_t> f(static_cast<size_t>(W) * H);
+            for (int y = 0; y < H; ++y) {
+                int dy = scrollOffset + y;
+                for (int x = 0; x < W; ++x) {
+                    uint32_t px = doc[static_cast<size_t>(dy) * W + x];
+                    if (y == H - 14) {
+                        px = 0xFF333333u; // 模拟底部 1px 分隔线
+                    } else if (y > H - 14) {
+                        // 模拟半透明暗色渐变遮挡
+                        uint32_t r = ((px >> 16) & 0xFF) / 4;
+                        uint32_t g = ((px >> 8) & 0xFF) / 4;
+                        uint32_t b = (px & 0xFF) / 4;
+                        px = 0xFF000000u | (r << 16) | (g << 8) | b;
+                    }
+                    f[static_cast<size_t>(y) * W + x] = px;
+                }
+            }
+            return f;
+        };
+        snap::ScrollStitcher fadeStitcher;
+        auto ff0 = makeFadeFrame(0);
+        auto ff1 = makeFadeFrame(90);
+        int fdy = 0;
+        if (fadeStitcher.AppendFrame(ff0.data(), W, H) != snap::StitchResult::FirstFrame) return 27;
+        if (fadeStitcher.AppendFrame(ff1.data(), W, H, &fdy) != snap::StitchResult::Stitched || fdy != 90) return 28;
+        // 校验原第一帧底部被分隔线/渐变遮挡的行 (y = H - 14 .. H - 1) 已被第二帧清晰内容完整覆盖
+        for (int y = H - 14; y < H; ++y) {
+            for (int x = 20; x < W - 20; ++x) {
+                if (fadeStitcher.Pixels()[static_cast<size_t>(y) * W + x] != doc[static_cast<size_t>(y) * W + x]) {
+                    return 29;
+                }
+            }
+        }
     }
 
     return 0;
